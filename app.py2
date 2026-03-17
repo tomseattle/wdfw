@@ -1,0 +1,213 @@
+import json
+import hashlib
+import os
+import time
+from confluent_kafka import Producer
+from datetime import datetime, timezone
+from pathlib import Path
+
+import requests
+from bs4 import BeautifulSoup
+
+try:
+    from confluent_kafka import Producer
+except ImportError:
+    Producer = None
+
+
+PAGES = [
+    {
+        "page_id": "fishing_regulations",
+        "url": "https://wdfw.wa.gov/fishing/regulations",
+        "source_type": "pamphlet",
+    },
+    {
+        "page_id": "emergency_rules_current",
+        "url": "https://wdfw.wa.gov/fishing/regulations/emergency-rules",
+        "source_type": "emergency_rules",
+    },
+]
+
+STATE_DIR = Path("state")
+SNAPSHOT_DIR = Path("snapshots")
+STATE_FILE = STATE_DIR / "page_state.json"
+
+POLL_INTERVAL_SECONDS = 900  # 15 minutes
+REQUEST_TIMEOUT_SECONDS = 30
+
+KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "wdfw.raw_pages")
+
+#### cnfl ###
+def get_producer() -> Producer:
+    return Producer({
+        "bootstrap.servers": os.environ["KAFKA_BOOTSTRAP_SERVERS"],
+        "security.protocol": "SASL_SSL",
+        "sasl.mechanism": "PLAIN",
+        "sasl.username": os.environ["KAFKA_API_KEY"],
+        "sasl.password": os.environ["KAFKA_API_SECRET"],
+    })
+
+def delivery_report(err, msg) -> None:
+    if err is not None:
+        print(f"Delivery failed for key={msg.key().decode('utf-8') if msg.key() else None}: {err}")
+    else:
+        print(
+            f"Delivered to topic={msg.topic()} partition={msg.partition()} offset={msg.offset()}"
+        )
+
+def publish_change_event(producer: Producer, event: dict) -> None:
+    topic = os.environ.get("KAFKA_TOPIC", "wdfw.raw_pages")
+
+    producer.produce(
+        topic=topic,
+        key=event["page_id"].encode("utf-8"),
+        value=json.dumps(event).encode("utf-8"),
+        callback=delivery_report,
+    )
+
+    producer.poll(0)
+
+####### END cnfl #####
+def ensure_dirs() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def load_state() -> dict:
+    if not STATE_FILE.exists():
+        return {}
+    with STATE_FILE.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_state(state: dict) -> None:
+    with STATE_FILE.open("w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
+
+
+def get_producer():
+    if not KAFKA_BOOTSTRAP or Producer is None:
+        return None
+    return Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
+
+
+def fetch_page(url: str) -> tuple[str, str]:
+    headers = {
+        "User-Agent": "wdfw-regs-poller/1.0 (contact: you@example.com)",
+        "Accept": "text/html,application/xhtml+xml",
+    }
+    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return response.text, response.headers.get("ETag", "")
+
+
+def extract_text(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+
+    # Remove noisy tags
+    for tag in soup(["script", "style", "noscript", "svg", "img", "footer"]):
+        tag.decompose()
+
+    # Prefer main/content areas when possible
+    main = soup.find("main")
+    container = main if main else soup.body if soup.body else soup
+
+    text = container.get_text(separator="\n", strip=True)
+
+    # Normalize whitespace and blank lines
+    lines = [line.strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    normalized = "\n".join(lines)
+
+    return normalized
+
+
+def compute_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def save_snapshot(page_id: str, fetched_at: str, html: str, text: str) -> None:
+    ts = fetched_at.replace(":", "").replace("-", "")
+    base = SNAPSHOT_DIR / f"{page_id}_{ts}"
+
+    with open(f"{base}.html", "w", encoding="utf-8") as f:
+        f.write(html)
+
+    with open(f"{base}.txt", "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def build_event(page: dict, fetched_at: str, html: str, text: str, etag: str, content_hash: str) -> dict:
+    return {
+        "page_id": page["page_id"],
+        "source_type": page["source_type"],
+        "source_url": page["url"],
+        "fetched_at": fetched_at,
+        "etag": etag,
+        "content_hash": content_hash,
+        "text": text,
+        "html": html,
+    }
+
+
+def publish_event(producer, event: dict) -> None:
+    if producer is None:
+        print(f"[LOCAL ONLY] Change detected for {event['page_id']} at {event['fetched_at']}")
+        return
+
+    producer.produce(
+        topic=KAFKA_TOPIC,
+        key=event["page_id"],
+        value=json.dumps(event).encode("utf-8"),
+    )
+    producer.flush()
+
+
+def poll_once(state: dict, producer) -> dict:
+    for page in PAGES:
+        fetched_at = datetime.now(timezone.utc).isoformat()
+
+        try:
+            html, etag = fetch_page(page["url"])
+            text = extract_text(html)
+            content_hash = compute_hash(text)
+
+            previous_hash = state.get(page["page_id"], {}).get("content_hash")
+
+            if previous_hash != content_hash:
+                print(f"[CHANGED] {page['page_id']}")
+                save_snapshot(page["page_id"], fetched_at, html, text)
+
+                event = build_event(page, fetched_at, html, text, etag, content_hash)
+                publish_event(producer, event)
+
+                state[page["page_id"]] = {
+                    "content_hash": content_hash,
+                    "fetched_at": fetched_at,
+                    "etag": etag,
+                    "source_url": page["url"],
+                }
+            else:
+                print(f"[NO CHANGE] {page['page_id']}")
+
+        except Exception as exc:
+            print(f"[ERROR] Failed polling {page['url']}: {exc}")
+
+    save_state(state)
+    return state
+
+
+def main() -> None:
+    ensure_dirs()
+    state = load_state()
+    producer = get_producer()
+
+    print("Starting WDFW poller...")
+    while True:
+        state = poll_once(state, producer)
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

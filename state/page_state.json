@@ -1,0 +1,14 @@
+{
+  "fishing_regulations": {
+    "content_hash": "e8653beb0c3c119092c4151f68eeef5f279c696b3ac5cb967693ea88916023e7",
+    "fetched_at": "2026-03-17T20:24:33.998904+00:00",
+    "etag": "W/\"1773767806\"",
+    "source_url": "https://wdfw.wa.gov/fishing/regulations"
+  },
+  "emergency_rules_current": {
+    "content_hash": "ec53f282c73d5f1e95ceb49ae5c37ad4c90d608d26616faab4a84c40273b1dc6",
+    "fetched_at": "2026-03-17T20:24:51.163365+00:00",
+    "etag": "W/\"1773767790\"",
+    "source_url": "https://wdfw.wa.gov/fishing/regulations/emergency-rules"
+  }
+}
