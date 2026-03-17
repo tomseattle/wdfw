@@ -227,3 +227,114 @@ This project demonstrates a **real-world AI application** that:
 ## 📄 License
 
 This project is free to use and intended for public benefit.
+
+                    ┌────────────────────────────┐
+                    │   WDFW Public Web Pages    │
+                    │----------------------------│
+                    │ /fishing/regulations       │
+                    │ /fishing/regulations/      │
+                    │   emergency-rules          │
+                    └──────────────┬─────────────┘
+                                   │
+                                   │ HTTP polling
+                                   ▼
+                    ┌────────────────────────────┐
+                    │   app.py (WDFW Poller)     │
+                    │----------------------------│
+                    │ Fetch HTML                 │
+                    │ Extract text               │
+                    │ Compute content hash       │
+                    │ Detect page change         │
+                    │ Save local snapshots       │
+                    └──────────────┬─────────────┘
+                                   │
+                                   │ Avro + Schema Registry
+                                   ▼
+                    ┌────────────────────────────┐
+                    │ Kafka Topic: wdfw.raw_pages│
+                    │----------------------------│
+                    │ Raw changed page events    │
+                    │ html, text, hash, etag     │
+                    └───────┬─────────┬──────────┘
+                            │         │
+                            │         └──────────────────────────────┐
+                            │                                        │
+                            ▼                                        ▼
+          ┌────────────────────────────┐          ┌────────────────────────────┐
+          │ parser_consumer.py         │          │ S3 Sink Connector          │
+          │----------------------------│          │----------------------------│
+          │ Deserialize raw page       │          │ Archive Kafka events       │
+          │ Parse rule blocks          │          │ to S3 for replay/history   │
+          │ Extract dates/species/etc. │          └──────────────┬─────────────┘
+          └──────────────┬─────────────┘                         │
+                         │                                       ▼
+                         │                         ┌────────────────────────────┐
+                         │                         │ S3 Archive                 │
+                         │                         │----------------------------│
+                         │                         │ raw_pages topic history    │
+                         │                         │ long-term storage          │
+                         │                         └────────────────────────────┘
+                         ▼
+          ┌──────────────────────────────────┐
+          │ Kafka Topic: wdfw.rules.extracted│
+          │----------------------------------│
+          │ Structured parsed rules          │
+          │ title, species, county, dates    │
+          │ rule_text, source_url            │
+          └──────────────┬───────────┬───────┘
+                         │           │
+                         │           └─────────────────────────────┐
+                         │                                         │
+                         ▼                                         ▼
+        ┌────────────────────────────┐          ┌────────────────────────────┐
+        │ Flink / Stream Processing  │          │ Embedding Indexer          │
+        │----------------------------│          │----------------------------│
+        │ Filter active rules        │          │ Chunk rule text            │
+        │ Apply precedence           │          │ Generate embeddings         │
+        │ Detect updates             │          │ Upsert vector records       │
+        │ Build derived topics       │          └──────────────┬─────────────┘
+        └───────┬─────────┬──────────┘                         │
+                │         │                                    ▼
+                │         │                    ┌────────────────────────────┐
+                │         │                    │ Vector DB                  │
+                │         │                    │----------------------------│
+                │         │                    │ semantic search index      │
+                │         │                    └────────────────────────────┘
+                │         │
+                │         ▼
+                │   ┌────────────────────────────┐
+                │   │ Kafka Topic: wdfw.alerts   │
+                │   │----------------------------│
+                │   │ Rule changes / notifications│
+                │   └──────────────┬─────────────┘
+                │                  │
+                ▼                  ▼
+┌────────────────────────────┐   ┌────────────────────────────┐
+│ Kafka Topic:               │   │ Notification Service       │
+│ wdfw.rules.current         │   │----------------------------│
+│----------------------------│   │ WebSocket / SSE / email    │
+│ current active rules only  │   │ user subscriptions         │
+└──────────────┬─────────────┘   └────────────────────────────┘
+               │
+               │ query + filters
+               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Backend API / RAG Service                                    │
+│--------------------------------------------------------------│
+│ Parse user question                                          │
+│ Extract location/species/date                                │
+│ Query current rules topic/store                              │
+│ Query vector DB for supporting chunks                        │
+│ Apply emergency-rule precedence                              │
+│ Generate grounded answer with citations                      │
+└──────────────┬───────────────────────────────────────────────┘
+               │
+               ▼
+┌────────────────────────────┐
+│ Web App                    │
+│----------------------------│
+│ Chat UI                    │
+│ Current regulation lookup  │
+│ Alerts / subscriptions     │
+│ Citations to WDFW sources  │
+└────────────────────────────┘
