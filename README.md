@@ -1,1 +1,9 @@
 # wdfw
+
+Use Case: This is FREE WA Fishing App which will read the WDFW (Washington Department of Fish and Wildlife) web page and allow a user to ask it questions about the rules and regulations and alert users on emergency rule changes.  The user can ask something like "what is the size and bag limit for Chinook salmon in marine area 10-1 after October 15th."  The regulations are a living document with hundreds of rules covering statewide, freshwater, marine, and species-specific regulations, often updated via emergency rules throughout the year.  
+
+Impact: In 2022, 1.2 million people fished according to the website. In 2025 alone, the agency sold approximately 866,000 fishing licenses. This equates to a large number of potential users of the app that will get upto date info from a complex document source that has many real time updates to the rules.  This will also benefit commercial fisheries businesses as well. In 2025, there were 228 coastal commercial Dungeness crab license holders and around 400 commerciakl fishing vessels in Wa State. This has the potential of saving recreational and commercial fisherman huge sums due to fines if they missed an emergency rule change or did not read through the cryptic document. 
+This will immeditaly impact Washington State residents who can use the app freely to make their lives a little easier.  This is an AI impact that would be welcomed
+by the public and they can see that there are benefits to their everyday lives.
+
+The app written in Python uses a kafka serializing producer, two schemas,  Confluent connector to S3 to store current regulations and flink to process the raw data pages to extracted and current rules and near real time alerts for emergency rule changes.
